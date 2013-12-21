@@ -30,9 +30,7 @@
 
 static double g_factor = 0.5;
 static time_t g_init_time;
-static struct timeval g_init_tv;
 
-static time_t (*real_time)(time_t *);
 static int (*real_gettimeofday)(struct timeval *, struct timezone *);
 
 static void initialize(void) __attribute__((constructor(101)));
@@ -44,31 +42,37 @@ static void initialize(void) {
 			g_factor = 1. / mul;
 	}
 
-	real_time = dlsym(RTLD_NEXT, "time");
 	real_gettimeofday = dlsym(RTLD_NEXT, "gettimeofday");
 
-	real_time(&g_init_time);
-	real_gettimeofday(&g_init_tv, NULL);
+	struct timeval tv;
+	real_gettimeofday(&tv, NULL);
+	g_init_time = tv.tv_sec;
 }
 
-time_t time(time_t *pres) {
-	time_t now = real_time(NULL);
-	now = (time_t)((now - g_init_time) * g_factor);
+static time_t hack_time(time_t *);
+static int hack_gettimeofday(struct timeval *, struct timezone *);
+
+static time_t hack_time(time_t *pres) {
+	struct timeval tv;
+	hack_gettimeofday(&tv, NULL);
+	time_t now = tv.tv_sec;
 	if (pres)
 		*pres = now;
 	return now;
 }
 
-int gettimeofday(struct timeval *tv, struct timezone *tz) {
+static int hack_gettimeofday(struct timeval *tv, struct timezone *tz) {
 	int res = real_gettimeofday(tv, tz);
 	if (res != 0)
 		return res;
 
-	double elapsed = (tv->tv_sec - g_init_tv.tv_sec) + (tv->tv_usec - g_init_tv.tv_usec) * 1e-6;
-	elapsed *= g_factor;
+	double elapsed = (tv->tv_sec - g_init_time) * 1e6 + tv->tv_usec;
+	long usec = (long)(elapsed * g_factor);
 
-	long usec = g_init_tv.tv_usec + (long)((elapsed - floor(elapsed)) * 1e6);
 	tv->tv_usec = usec % 1000000;
-	tv->tv_sec = g_init_tv.tv_sec + (long)elapsed + usec / 1000000;
+	tv->tv_sec = g_init_time + usec / 1000000;
 	return 0;
 }
+
+time_t time(time_t *) __attribute__((alias("hack_time")));
+int gettimeofday(struct timeval *, struct timezone *) __attribute__((alias("hack_gettimeofday")));
