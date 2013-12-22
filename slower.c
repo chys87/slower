@@ -23,6 +23,7 @@
 
 #include <dlfcn.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
@@ -33,8 +34,7 @@ static time_t g_init_time;
 
 static int (*real_gettimeofday)(struct timeval *, struct timezone *);
 
-static void initialize(void) __attribute__((constructor(101)));
-static void initialize(void) {
+static void do_initialize(void) {
 	const char *mul_s = getenv("SLOWER_FACTOR");
 	if (mul_s) {
 		double mul = strtod(mul_s, NULL);
@@ -47,6 +47,11 @@ static void initialize(void) {
 	struct timeval tv;
 	real_gettimeofday(&tv, NULL);
 	g_init_time = tv.tv_sec;
+}
+
+void initialize(void) {
+	static pthread_once_t once = PTHREAD_ONCE_INIT;
+	pthread_once(&once, &do_initialize);
 }
 
 static time_t hack_time(time_t *);
@@ -62,6 +67,8 @@ static time_t hack_time(time_t *pres) {
 }
 
 static int hack_gettimeofday(struct timeval *tv, struct timezone *tz) {
+	initialize();
+
 	int res = real_gettimeofday(tv, tz);
 	if (res != 0)
 		return res;
