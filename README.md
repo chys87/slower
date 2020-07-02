@@ -24,6 +24,10 @@ You can adjust the value of `SLOWER_FACTOR` to achieve different ratios.
 Values between `0.01` and `100` (inclusive) are accepted.
 The larger the value, the slower the clock (as seen by the deceived application) runs.
 
+You can also `make install` and use `slower.sh` instead:
+
+    /path/to/slower.sh -f 2 dosbox
+
 
 HOW IT WORKS & TODO
 ===================
