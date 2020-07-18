@@ -1,7 +1,7 @@
 /*
  * The MIT License (MIT)
  *
- * Copyright (c) 2013 chys <admin@chys.info>
+ * Copyright (c) 2013-2020 chys <admin@chys.info>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of
  * this software and associated documentation files (the "Software"), to deal in
@@ -21,6 +21,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <errno.h>
 #include <dlfcn.h>
 #include <math.h>
 #include <pthread.h>
@@ -29,10 +30,21 @@
 #include <time.h>
 #include <sys/time.h>
 
-static double g_factor = 0.5;
-static time_t g_init_time;
+typedef struct ClockInfo {
+	int64_t init_time;
+	int64_t fake_init_time;
+} ClockInfo;
 
-static int (*real_gettimeofday)(struct timeval *, struct timezone *);
+#define CLOCK_COUNT 12
+static ClockInfo g_clocks[CLOCK_COUNT] = {};
+
+static double g_factor = 0.5;
+
+static int (*real_clock_gettime)(clockid_t, struct timespec *);
+
+static inline int64_t ts_to_int64(struct timespec ts) {
+	return ts.tv_sec * INT64_C(1000000000) + ts.tv_nsec;
+}
 
 static void do_initialize(void) {
 	const char *mul_s = getenv("SLOWER_FACTOR");
@@ -42,44 +54,134 @@ static void do_initialize(void) {
 			g_factor = 1. / mul;
 	}
 
-	real_gettimeofday = dlsym(RTLD_NEXT, "gettimeofday");
+	real_clock_gettime = dlsym(RTLD_NEXT, "clock_gettime");
 
-	struct timeval tv;
-	real_gettimeofday(&tv, NULL);
-	g_init_time = tv.tv_sec;
+	{
+		struct timespec ts;
+		real_clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+		g_clocks[CLOCK_MONOTONIC_RAW].init_time = ts_to_int64(ts);
+		g_clocks[CLOCK_MONOTONIC_RAW].fake_init_time = g_clocks[CLOCK_MONOTONIC_RAW].init_time;
+	}
+	{
+		struct timespec ts;
+		real_clock_gettime(CLOCK_REALTIME, &ts);
+		g_clocks[CLOCK_REALTIME].init_time = ts_to_int64(ts);
+		g_clocks[CLOCK_REALTIME].fake_init_time = g_clocks[CLOCK_REALTIME].init_time;
+	}
+
+	const char *time_s = getenv("SLOWER_TIME");
+	if (time_s) {
+		struct tm tm;
+		if (strptime(time_s, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+			g_clocks[CLOCK_REALTIME].fake_init_time = mktime(&tm) * INT64_C(1000000000);
+		}
+	}
 }
 
-void initialize(void) {
+static void initialize(void) {
 	static pthread_once_t once = PTHREAD_ONCE_INIT;
 	pthread_once(&once, &do_initialize);
 }
 
 static time_t hack_time(time_t *);
 static int hack_gettimeofday(struct timeval *, struct timezone *);
+static int hack_clock_gettime(clockid_t clockid, struct timespec *ts);
 
 static time_t hack_time(time_t *pres) {
-	struct timeval tv;
-	hack_gettimeofday(&tv, NULL);
-	time_t now = tv.tv_sec;
+	struct timespec ts;
+#ifdef CLOCK_REALTIME_COARSE
+	hack_clock_gettime(CLOCK_REALTIME_COARSE, &ts);
+#else
+	hack_clock_gettime(CLOCK_REALTIME, &ts);
+#endif
+	time_t now = ts.tv_sec;
 	if (pres)
 		*pres = now;
 	return now;
 }
 
 static int hack_gettimeofday(struct timeval *tv, struct timezone *tz) {
+	// A non-null tz is long deprecated, and we don't support it.
+	if (tz != NULL) {
+		errno = ENOSYS;
+		return -1;
+	}
+
+	struct timespec ts;
+	int ret = hack_clock_gettime(CLOCK_REALTIME, &ts);
+	if (ret != 0) {
+		return ret;
+	}
+
+	tv->tv_sec = ts.tv_sec;
+	tv->tv_usec = ts.tv_nsec / 1000;
+	return 0;
+}
+
+// Returns either CLOCK_REALTIME or CLOCK_MONOTONIC_RAW
+static clockid_t get_reference_clock(clockid_t clockid) {
+	switch (clockid) {
+	case CLOCK_REALTIME:
+#ifdef CLOCK_REALTIME_COARSE
+	case CLOCK_REALTIME_COARSE:
+#endif
+#ifdef CLOCK_REALTIME_ALARM
+	case CLOCK_REALTIME_ALARM:
+#endif
+#ifdef CLOCK_TAI
+	case CLOCK_TAI:
+#endif
+		return CLOCK_REALTIME;
+	default:
+		return CLOCK_MONOTONIC_RAW;
+	}
+}
+
+static int hack_clock_gettime(clockid_t clockid, struct timespec *ts) {
 	initialize();
 
-	int res = real_gettimeofday(tv, tz);
-	if (res != 0)
-		return res;
+	if (clockid < 0 || clockid >= CLOCK_COUNT) {
+		return real_clock_gettime(clockid, ts);
+	}
 
-	double elapsed = (tv->tv_sec - g_init_time) * 1e6 + tv->tv_usec;
-	long usec = (long)(elapsed * g_factor);
+	clockid_t clockid_ref = get_reference_clock(clockid);
+	ClockInfo *clock_ref = &g_clocks[clockid_ref];
 
-	tv->tv_usec = usec % 1000000;
-	tv->tv_sec = g_init_time + usec / 1000000;
+	ClockInfo *clock = &g_clocks[clockid];
+	if (clock->init_time == 0 && clock->fake_init_time == 0) {
+		int ret = real_clock_gettime(clockid_ref, ts);
+		if (ret != 0) {
+			return ret;
+		}
+		int64_t now_ref = ts_to_int64(*ts);
+		int64_t elapsed_ref = now_ref - clock_ref->init_time;
+
+		ret = real_clock_gettime(clockid, ts);
+		if (ret != 0) {
+			return ret;
+		}
+		int64_t now = ts_to_int64(*ts);
+
+		clock->init_time = now - elapsed_ref;
+		clock->fake_init_time = clock->init_time + (clock_ref->fake_init_time - clock_ref->init_time);
+	}
+
+	int ret = real_clock_gettime(clockid, ts);
+	if (ret != 0) {
+		return ret;
+	}
+
+	int64_t now = ts_to_int64(*ts);
+	int64_t fake_now = clock->fake_init_time + (int64_t)((now - clock->init_time) * g_factor);
+	ts->tv_sec = fake_now / 1000000000;
+	ts->tv_nsec = fake_now % 1000000000;
+	if (ts->tv_nsec < 0) {
+		ts->tv_sec--;
+		ts->tv_nsec += 1000000000;
+	}
 	return 0;
 }
 
 time_t time(time_t *) __attribute__((alias("hack_time")));
 int gettimeofday(struct timeval *, struct timezone *) __attribute__((alias("hack_gettimeofday")));
+int clock_gettime(clockid_t, struct timespec *) __attribute__((alias("hack_clock_gettime")));

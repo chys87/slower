@@ -5,7 +5,7 @@ INSTDIR := ~/.local/lib64
 all: libslower.so
 
 libslower.so: slower.c
-	gcc -O2 -march=native -s -fPIC -D_GNU_SOURCE -shared -Wall -o $@ $< -ldl -lpthread -lm
+	gcc -O2 -march=native -fPIC -D_GNU_SOURCE -shared -Wall -o $@ $< -ldl -lpthread -lm -lrt
 
 clean:
 	rm -f libslower.so
@@ -13,4 +13,4 @@ clean:
 install: $(INSTDIR)/libslower.so
 
 $(INSTDIR)/libslower.so: libslower.so
-	install -D -T -C -v -m644 $< $@
+	install -D -T -v -s -m644 $< $@

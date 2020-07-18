@@ -36,12 +36,12 @@ This program hacks glibc time functions to deceive applications of the real time
 
 Currently hacked interfaces:
 
+ * [`clock_gettime`](http://linux.die.net/man/2/clock_gettime)
  * [`time`](http://linux.die.net/man/2/time)
  * [`gettimeofday`](http://linux.die.net/man/2/gettimeofday)
 
 TODO:
 
- * [`clock_gettime`](http://linux.die.net/man/2/clock_gettime)
  * Sleep functions:
    [`sleep`](http://linux.die.net/man/2/sleep),
    [`usleep`](http://linux.die.net/man/2/usleep),
