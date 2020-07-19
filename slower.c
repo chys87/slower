@@ -183,5 +183,10 @@ static int hack_clock_gettime(clockid_t clockid, struct timespec *ts) {
 }
 
 time_t time(time_t *) __attribute__((alias("hack_time")));
-int gettimeofday(struct timeval *, struct timezone *) __attribute__((alias("hack_gettimeofday")));
+
+// The second parameter of gettimeofday is "struct timezone *".
+// However, it's long deprecated, and most recent glibc versions declare it as void *.
+// For compatibility with older and newer glibc, we have to do this hack.
+int GETTIMEOFDAY(struct timeval *, struct timezone *) asm("gettimeofday") __attribute__((alias("hack_gettimeofday")));
+
 int clock_gettime(clockid_t, struct timespec *) __attribute__((alias("hack_clock_gettime")));
